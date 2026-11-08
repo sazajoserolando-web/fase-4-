@@ -1,0 +1,328 @@
+from abc import ABC, abstractmethod
+from datetime import datetime
+import logging
+
+
+# ---------- Registro de eventos y errores ----------
+
+logging.basicConfig(
+    filename="software_fj.log",
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    encoding="utf-8",
+)
+
+
+# ---------- Excepciones personalizadas ----------
+
+class ErrorSistema(Exception):
+    """Excepción base de la aplicación."""
+
+
+class DatoInvalidoError(ErrorSistema):
+    pass
+
+
+class ServicioNoDisponibleError(ErrorSistema):
+    pass
+
+
+class ReservaError(ErrorSistema):
+    pass
+
+
+# ---------- Entidades ----------
+
+class Entidad(ABC):
+    def __init__(self, identificador):
+        if not identificador:
+            raise DatoInvalidoError("El identificador es obligatorio.")
+        self._identificador = str(identificador)
+
+    @property
+    def identificador(self):
+        return self._identificador
+
+
+class Cliente(Entidad):
+    def __init__(self, identificador, nombre, correo):
+        super().__init__(identificador)
+        self.nombre = nombre
+        self.correo = correo
+
+    @property
+    def nombre(self):
+        return self._nombre
+
+    @nombre.setter
+    def nombre(self, valor):
+        if not isinstance(valor, str) or not valor.strip():
+            raise DatoInvalidoError("El nombre no puede estar vacío.")
+        self._nombre = valor.strip()
+
+    @property
+    def correo(self):
+        return self._correo
+
+    @correo.setter
+    def correo(self, valor):
+        if not isinstance(valor, str) or "@" not in valor:
+            raise DatoInvalidoError("El correo no tiene un formato válido.")
+        self._correo = valor.strip().lower()
+
+    def __str__(self):
+        return f"{self.nombre} ({self.correo})"
+
+
+# ---------- Servicios ----------
+
+class Servicio(Entidad, ABC):
+    def __init__(self, identificador, nombre, tarifa_hora):
+        super().__init__(identificador)
+        if not isinstance(tarifa_hora, (int, float)) or tarifa_hora <= 0:
+            raise DatoInvalidoError("La tarifa debe ser un número positivo.")
+        self.nombre = nombre
+        self.tarifa_hora = float(tarifa_hora)
+        self._disponible = True
+
+    def validar(self, duracion):
+        if not isinstance(duracion, (int, float)) or duracion <= 0:
+            raise DatoInvalidoError("La duración debe ser positiva.")
+        if not self._disponible:
+            raise ServicioNoDisponibleError(
+                f"El servicio '{self.nombre}' no está disponible."
+            )
+
+    @abstractmethod
+    def calcular_costo(self, duracion, descuento=0, impuesto=0.19):
+        pass
+
+    @abstractmethod
+    def describir(self):
+        pass
+
+
+class ReservaSala(Servicio):
+    def __init__(self, identificador, nombre, tarifa_hora, capacidad):
+        super().__init__(identificador, nombre, tarifa_hora)
+        if not isinstance(capacidad, int) or capacidad <= 0:
+            raise DatoInvalidoError("La capacidad debe ser un entero positivo.")
+        self.capacidad = capacidad
+
+    def validar(self, duracion, personas=1):
+        super().validar(duracion)
+        if not isinstance(personas, int) or not 1 <= personas <= self.capacidad:
+            raise DatoInvalidoError("Cantidad de personas fuera de la capacidad.")
+
+    def calcular_costo(self, duracion, descuento=0, impuesto=0.19):
+        self.validar(duracion)
+        return _calcular_total(self.tarifa_hora * duracion, descuento, impuesto)
+
+    def describir(self):
+        return f"Sala '{self.nombre}', capacidad: {self.capacidad} personas"
+
+
+class AlquilerEquipo(Servicio):
+    def __init__(self, identificador, nombre, tarifa_hora, unidades):
+        super().__init__(identificador, nombre, tarifa_hora)
+        if not isinstance(unidades, int) or unidades <= 0:
+            raise DatoInvalidoError("Las unidades deben ser un entero positivo.")
+        self.unidades = unidades
+
+    def validar(self, duracion, cantidad=1):
+        super().validar(duracion)
+        if not isinstance(cantidad, int) or not 1 <= cantidad <= self.unidades:
+            raise DatoInvalidoError("Cantidad de equipos no disponible.")
+
+    def calcular_costo(self, duracion, descuento=0, impuesto=0.19):
+        self.validar(duracion)
+        return _calcular_total(self.tarifa_hora * duracion, descuento, impuesto)
+
+    def describir(self):
+        return f"Alquiler de '{self.nombre}', unidades disponibles: {self.unidades}"
+
+
+class Asesoria(Servicio):
+    def __init__(self, identificador, nombre, tarifa_hora, especialidad):
+        super().__init__(identificador, nombre, tarifa_hora)
+        if not isinstance(especialidad, str) or not especialidad.strip():
+            raise DatoInvalidoError("La especialidad es obligatoria.")
+        self.especialidad = especialidad.strip()
+
+    def calcular_costo(self, duracion, descuento=0, impuesto=0.19):
+        self.validar(duracion)
+        return _calcular_total(self.tarifa_hora * duracion, descuento, impuesto)
+
+    def describir(self):
+        return f"Asesoría en {self.especialidad}: '{self.nombre}'"
+
+
+def _calcular_total(subtotal, descuento, impuesto):
+    """Validación compartida para el cálculo del costo."""
+    if not 0 <= descuento <= 1:
+        raise DatoInvalidoError("El descuento debe estar entre 0 y 1.")
+    if not 0 <= impuesto <= 1:
+        raise DatoInvalidoError("El impuesto debe estar entre 0 y 1.")
+    return round(subtotal * (1 - descuento) * (1 + impuesto), 2)
+
+
+# ---------- Reservas ----------
+
+class Reserva(Entidad):
+    ESTADOS = {"pendiente", "confirmada", "cancelada"}
+
+    def __init__(self, identificador, cliente, servicio, duracion):
+        super().__init__(identificador)
+        if not isinstance(cliente, Cliente) or not isinstance(servicio, Servicio):
+            raise DatoInvalidoError("Se requiere un cliente y un servicio válidos.")
+        servicio.validar(duracion)
+        self.cliente = cliente
+        self.servicio = servicio
+        self.duracion = duracion
+        self.estado = "pendiente"
+
+    def confirmar(self):
+        if self.estado != "pendiente":
+            raise ReservaError("Solo se pueden confirmar reservas pendientes.")
+        self.estado = "confirmada"
+        logging.info("Reserva %s confirmada.", self.identificador)
+
+    def cancelar(self):
+        if self.estado == "cancelada":
+            raise ReservaError("La reserva ya está cancelada.")
+        self.estado = "cancelada"
+        logging.info("Reserva %s cancelada.", self.identificador)
+
+    def procesar(self, descuento=0, impuesto=0.19):
+        try:
+            if self.estado == "cancelada":
+                raise ReservaError("No se puede procesar una reserva cancelada.")
+            total = self.servicio.calcular_costo(
+                self.duracion, descuento, impuesto
+            )
+        except ErrorSistema as error:
+            logging.exception("Error procesando reserva %s", self.identificador)
+            raise ReservaError("No fue posible procesar la reserva.") from error
+        else:
+            logging.info(
+                "Reserva %s procesada. Total: $%.2f",
+                self.identificador,
+                total,
+            )
+            return total
+        finally:
+            logging.info("Finalizó el intento de procesamiento %s.",
+                         self.identificador)
+
+
+# ---------- Sistema de gestión ----------
+
+class SistemaFJ:
+    def __init__(self):
+        self.clientes = []
+        self.servicios = []
+        self.reservas = []
+
+    def registrar_cliente(self, cliente):
+        if not isinstance(cliente, Cliente):
+            raise DatoInvalidoError("El objeto no es un cliente.")
+        if any(c.identificador == cliente.identificador for c in self.clientes):
+            raise DatoInvalidoError("Ya existe un cliente con ese identificador.")
+        self.clientes.append(cliente)
+        logging.info("Cliente registrado: %s", cliente.identificador)
+
+    def registrar_servicio(self, servicio):
+        if not isinstance(servicio, Servicio):
+            raise DatoInvalidoError("El objeto no es un servicio.")
+        self.servicios.append(servicio)
+        logging.info("Servicio registrado: %s", servicio.identificador)
+
+    def crear_reserva(self, identificador, cliente, servicio, duracion):
+        reserva = Reserva(identificador, cliente, servicio, duracion)
+        self.reservas.append(reserva)
+        logging.info("Reserva creada: %s", identificador)
+        return reserva
+
+
+# ---------- Demostración de operaciones ----------
+
+def intentar(descripcion, operacion):
+    """Ejecuta una operación sin detener el programa ante errores."""
+    try:
+        resultado = operacion()
+    except Exception as error:
+        logging.exception("Operación fallida: %s", descripcion)
+        print(f"ERROR — {descripcion}: {error}")
+    else:
+        print(f"OK — {descripcion}" + (
+            f": {resultado}" if resultado is not None else ""
+        ))
+
+
+def demo():
+    sistema = SistemaFJ()
+
+    # 1. Crear cliente válido
+    cliente = Cliente("C01", "Ana Pérez", "ana@email.com")
+    intentar("Registrar cliente válido",
+             lambda: sistema.registrar_cliente(cliente))
+
+    # 2. Registrar un segundo cliente
+    cliente2 = Cliente("C02", "Luis Rojas", "luis@email.com")
+    intentar("Registrar segundo cliente",
+             lambda: sistema.registrar_cliente(cliente2))
+
+    # 3. Rechazar correo inválido
+    intentar("Crear cliente con correo inválido",
+             lambda: Cliente("C03", "Mario", "correo-invalido"))
+
+    # 4. Crear servicios de distintos tipos
+    sala = ReservaSala("S01", "Sala Norte", 50000, 12)
+    equipo = AlquilerEquipo("S02", "Proyector", 15000, 3)
+    asesoria = Asesoria("S03", "Consultoría", 80000, "software")
+
+    for servicio in (sala, equipo, asesoria):
+        intentar(f"Registrar {servicio.describir()}",
+                 lambda s=servicio: sistema.registrar_servicio(s))
+
+    # 5. Rechazar una tarifa inválida
+    intentar("Crear servicio con tarifa inválida",
+             lambda: ReservaSala("S04", "Sala inválida", -10, 5))
+
+    # 6. Crear y confirmar reserva válida
+    reserva1 = sistema.crear_reserva("R01", cliente, sala, 2)
+    intentar("Confirmar reserva R01", reserva1.confirmar)
+
+    # 7. Procesar con descuento e impuesto
+    intentar("Procesar reserva R01",
+             lambda: reserva1.procesar(descuento=0.10, impuesto=0.19))
+
+    # 8. Rechazar duración inválida
+    intentar("Crear reserva con duración inválida",
+             lambda: sistema.crear_reserva("R02", cliente2, equipo, 0))
+
+    # 9. Rechazar cantidad de personas superior a la capacidad
+    intentar("Validar exceso de capacidad",
+             lambda: sala.validar(1, personas=50))
+
+    # 10. Cancelar reserva
+    intentar("Cancelar reserva R01", reserva1.cancelar)
+
+    # 11. Rechazar el procesamiento de una reserva cancelada
+    intentar("Procesar reserva cancelada",
+             lambda: reserva1.procesar())
+
+    # 12. Crear reserva de asesoría y procesarla
+    reserva2 = sistema.crear_reserva("R03", cliente2, asesoria, 1.5)
+    intentar("Procesar reserva R03", reserva2.procesar)
+
+    print(
+        f"\nResumen: {len(sistema.clientes)} clientes, "
+        f"{len(sistema.servicios)} servicios y "
+        f"{len(sistema.reservas)} reservas creadas."
+    )
+    print("Los eventos y errores están en software_fj.log.")
+
+
+if __name__ == "__main__":
+    demo()
